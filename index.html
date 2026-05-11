@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<title>Unity WebGL Player | My project</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+
+<style>
+body{
+margin:0;
+overflow:hidden;
+text-align:center;
+padding:0;
+border:0;
+}
+
+/* movement text */
+#movement{
+position:absolute;
+top:20px;
+left:20px;
+font-size:40px;
+font-weight:bold;
+color:white;
+z-index:999;
+font-family:Arial;
+pointer-events:none; /* Clicks pass through to the game */
+}
+
+video{
+display:none;
+}
+
+#tracking{
+position:absolute;
+top:0;
+left:0;
+width:100vw;
+height:100vh;
+z-index:5;
+opacity:0;
+pointer-events:none;
+}
+
+canvas{
+position:absolute;
+top:0;
+left:0;
+}
+</style>
+</head>
+
+<body>
+
+<div id="movement">Movement: NONE</div>
+
+<div id="tracking">
+<video id="video" autoplay playsinline muted webkit-playsinline></video>
+<canvas id="trackingCanvas"></canvas>
+</div>
+
+<canvas id="unity-canvas"
+width=960
+height=600
+tabindex="-1"
+style="width: 960px; height: 600px; background: #231F20">
+</canvas>
+
+<script src="Build/unity_game.loader.js"></script>
+
+<script>
+console.log("SCRIPT STARTED");
+
+/* =========================
+   ORIGINAL UNITY CODE
+========================= */
+
+let unityInstance = null;
+
+if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+    var meta = document.createElement('meta');
+    meta.name = 'viewport';
+    meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
+    document.getElementsByTagName('head')[0].appendChild(meta);
+    var canvas = document.querySelector("#unity-canvas");
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    canvas.style.position = "fixed";
+    document.body.style.textAlign = "left";
+}
+
+createUnityInstance(document.querySelector("#unity-canvas"), {
+    dataUrl: "Build/unity_game.data",
+    frameworkUrl: "Build/unity_game.framework.js",
+    codeUrl: "Build/unity_game.wasm",
+    streamingAssetsUrl: "StreamingAssets",
+    companyName: "DefaultCompany",
+    productName: "My project",
+    productVersion: "1.0",
+}).then((instance)=>{
+    unityInstance = instance;
+    console.log("UNITY READY");
+    // Start MediaPipe automatically after Unity loads
+    setTimeout(()=>{
+      console.log("STARTING MEDIAPIPE AFTER DELAY");
+      startMediaPipe();
+    },3000);
+});
+
+/* =========================
+   YOUR MEDIAPIPE CODE
+========================= */
+
+/* SEND TO UNITY via internal JS bridge */
+function sendToUnity(dir){
+    try{
+        if(unityInstance){
+            unityInstance.SendMessage("player", "OnHandMove", dir);
+            console.log("Sent To Unity:", dir);
+        }
+    }catch(err){
+        console.log("Unity Error:", err);
+    }
+}
+
+const video = document.getElementById("video");
+const trackingCanvas = document.getElementById("trackingCanvas");
+const ctx = trackingCanvas.getContext("2d");
+const movementText = document.getElementById("movement");
+
+trackingCanvas.width = window.innerWidth;
+trackingCanvas.height = window.innerHeight;
+
+let lastDirection = "NONE";
+let lastCycleTime = 0;
+let cycleDelay = 500;
+
+function getDirection(dx,dy){
+    let angle = Math.atan2(-dy,dx) * 180 / Math.PI;
+    let dir = lastDirection;
+
+    if(angle > -30 && angle <= 30) dir = "RIGHT";
+    else if(angle > 60 && angle <= 120) dir = "UP";
+    else if(angle > 150 || angle <= -150) dir = "LEFT";
+    else if(angle > -120 && angle <= -60) dir = "DOWN";
+
+    lastDirection = dir;
+    return dir;
+}
+
+function onResults(results){
+    ctx.save();
+    ctx.clearRect(0, 0, trackingCanvas.width, trackingCanvas.height);
+    ctx.scale(-1,1);
+    ctx.drawImage(results.image, -trackingCanvas.width, 0, trackingCanvas.width, trackingCanvas.height);
+    ctx.restore();
+
+    if(results.multiHandLandmarks && results.multiHandLandmarks.length > 0){
+        for(let i=0;i<results.multiHandLandmarks.length;i++){
+            const lm = results.multiHandLandmarks[i];
+            const wrist = lm[0];
+            const middle = lm[12];
+
+            let x1 = wrist.x * trackingCanvas.width;
+            let y1 = wrist.y * trackingCanvas.height;
+            let x2 = middle.x * trackingCanvas.width;
+            let y2 = middle.y * trackingCanvas.height;
+
+            let dx = x2-x1;
+            let dy = y2-y1;
+            let dir = getDirection(dx,dy);
+
+            /* mirror fix for GitHub/WebCam */
+            if(dir==="LEFT") dir="RIGHT";
+            else if(dir==="RIGHT") dir="LEFT";
+
+            movementText.innerText = "Movement: " + dir;
+
+            let now = Date.now();
+            if(now - lastCycleTime > cycleDelay){
+                sendToUnity(dir);
+                setTimeout(()=>{ sendToUnity("NONE"); }, 500);
+                lastCycleTime = now;
+            }
+
+            /* DRAWING */
+            ctx.beginPath();
+            ctx.moveTo(x1,y1);
+            ctx.lineTo(x2,y2);
+            ctx.lineWidth=5;
+            ctx.strokeStyle="lime";
+            ctx.stroke();
+            drawConnectors(ctx,lm,HAND_CONNECTIONS);
+            drawLandmarks(ctx,lm);
+        }
+    } else {
+        movementText.innerText = "Movement: NONE";
+    }
+}
+
+const hands = new Hands({
+    locateFile:(file)=>{
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    }
+});
+
+hands.setOptions({
+    maxNumHands: 1, // Changed to 1 for better Android performance
+    modelComplexity: 0, // Changed to 0 (Lite) for Android stability
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+});
+
+hands.onResults(onResults);
+
+async function startMediaPipe(){
+    try{
+        console.log("STARTING CAMERA");
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: 320, height: 240 }, // Optimized resolution
+            audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        
+        const camera = new Camera(video,{
+            onFrame: async()=>{ await hands.send({image:video}); },
+            width:320, height:240
+        });
+        camera.start();
+        console.log("CAMERA & MEDIAPIPE STARTED");
+    }catch(err){
+        console.log("CAMERA ERROR:", err);
+    }
+}
+
+console.log("Camera Script Loaded");
+</script>
+</body>
+</html>
